@@ -278,6 +278,129 @@ def test_answer_question_returns_index_missing_for_empty_vault(vault, db, monkey
     assert result["selected_pages"] == []
 
 
+def test_answer_question_does_not_feed_hidden_article_content_to_the_llm(vault, db, monkeypatch):
+    """A page excluded from MCP visibility must not reach the synthesis prompt, even
+    when the fast model's page-selection step picks its title (issue #42)."""
+    import json
+    from unittest.mock import MagicMock
+
+    from conftest import as_router
+
+    wiki = vault / "wiki"
+    _write_article(wiki / "Secret Topic.md", "CONFIDENTIAL-MARKER-9f3a", visibility="private")
+    _seed_article(db, "wiki/Secret Topic.md", "Secret Topic")
+    (wiki / "index.md").write_text(
+        "# Wiki Index\n\n## Concepts\n- [[Secret Topic]]\n", encoding="utf-8"
+    )
+    handlers, config = _build_tools(vault)
+
+    prompts: list[str] = []
+
+    def side_effect(**kwargs):
+        prompts.append(kwargs["prompt"])
+        if len(prompts) == 1:
+            return json.dumps({"pages": ["Secret Topic"]})
+        return json.dumps({"answer": "a safe answer", "title": "Safe"})
+
+    client = MagicMock()
+    client.generate.side_effect = side_effect
+
+    from synto import client_factory
+
+    monkeypatch.setattr(client_factory, "build_router", lambda *_a, **_k: as_router(client))
+
+    result = handlers["answer_question"]("What is the secret topic?")
+
+    assert len(prompts) == 2
+    assert "CONFIDENTIAL-MARKER-9f3a" not in prompts[1]
+    assert result["selected_pages"] == []
+
+
+def test_answer_question_keeps_visible_content_when_a_hidden_page_is_also_selected(
+    vault, db, monkeypatch
+):
+    """The fix must not over-filter: a visible page selected alongside a hidden one
+    still reaches the synthesis prompt."""
+    import json
+    from unittest.mock import MagicMock
+
+    from conftest import as_router
+
+    wiki = vault / "wiki"
+    _write_article(wiki / "Public Topic.md", "PUBLIC-MARKER-1a2b", visibility="public")
+    _write_article(wiki / "Secret Topic.md", "CONFIDENTIAL-MARKER-9f3a", visibility="private")
+    _seed_article(db, "wiki/Public Topic.md", "Public Topic")
+    _seed_article(db, "wiki/Secret Topic.md", "Secret Topic")
+    (wiki / "index.md").write_text(
+        "# Wiki Index\n\n## Concepts\n- [[Public Topic]]\n- [[Secret Topic]]\n", encoding="utf-8"
+    )
+    handlers, config = _build_tools(vault)
+
+    prompts: list[str] = []
+
+    def side_effect(**kwargs):
+        prompts.append(kwargs["prompt"])
+        if len(prompts) == 1:
+            return json.dumps({"pages": ["Public Topic", "Secret Topic"]})
+        return json.dumps({"answer": "a safe answer", "title": "Safe"})
+
+    client = MagicMock()
+    client.generate.side_effect = side_effect
+
+    from synto import client_factory
+
+    monkeypatch.setattr(client_factory, "build_router", lambda *_a, **_k: as_router(client))
+
+    result = handlers["answer_question"]("What is Public Topic?")
+
+    assert len(prompts) == 2
+    assert "PUBLIC-MARKER-1a2b" in prompts[1]
+    assert "CONFIDENTIAL-MARKER-9f3a" not in prompts[1]
+    assert result["selected_pages"] == ["Public Topic"]
+
+
+def test_answer_question_still_includes_source_page_content(vault, db, monkeypatch):
+    """A source-summary page (wiki/sources/) carries no `visibility`/`exclude_tags`
+    frontmatter and is never in the reader's concept/synthesis article cache, so the MCP
+    visibility gate must exempt it rather than reading its absence from that cache as
+    hidden (review on #113: the gate dropped every source page outright)."""
+    import json
+    from unittest.mock import MagicMock
+
+    from conftest import as_router
+
+    from synto.vault import write_note
+
+    wiki = vault / "wiki"
+    sources_dir = wiki / "sources"
+    sources_dir.mkdir(parents=True, exist_ok=True)
+    write_note(sources_dir / "Source Note.md", {"title": "Source Note"}, "SOURCE-MARKER-77ee")
+    (wiki / "index.md").write_text(
+        "# Wiki Index\n\n## Sources\n- [[sources/Source Note]]\n", encoding="utf-8"
+    )
+    handlers, config = _build_tools(vault)
+
+    prompts: list[str] = []
+
+    def side_effect(**kwargs):
+        prompts.append(kwargs["prompt"])
+        if len(prompts) == 1:
+            return json.dumps({"pages": ["sources/Source Note"]})
+        return json.dumps({"answer": "a safe answer", "title": "Safe"})
+
+    client = MagicMock()
+    client.generate.side_effect = side_effect
+
+    from synto import client_factory
+
+    monkeypatch.setattr(client_factory, "build_router", lambda *_a, **_k: as_router(client))
+
+    handlers["answer_question"]("What does the source say?")
+
+    assert len(prompts) == 2
+    assert "SOURCE-MARKER-77ee" in prompts[1]
+
+
 def test_apply_filter_min_status_unknown_falls_through(vault, db):
     wiki = vault / "wiki"
     _write_article(wiki / "Pub.md", "published")

@@ -15,6 +15,7 @@ import hashlib
 import logging
 import re
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -246,13 +247,26 @@ def _load_pages(
     db: StateDB | None = None,
     *,
     max_pages: int = MAX_PAGES,
+    visible: Callable[[str], bool] | None = None,
 ) -> str:
-    """Return concatenated content of selected pages."""
+    """Return concatenated content of selected pages.
+
+    `visible`, when given, is consulted against the RESOLVED page path (after alias and
+    filename-fallback resolution), not the raw selection title: an alias-selected page must
+    be gated the same as one selected by its canonical title.
+    """
     parts: list[str] = []
     for title in page_titles[:max_pages]:
         page = _find_page(config, title, db=db)
         if page is None:
             continue
+        if visible is not None:
+            try:
+                rel = str(page.relative_to(config.vault))
+            except ValueError:
+                rel = str(page)
+            if not visible(rel):
+                continue
         try:
             meta, body = parse_note(page)
             page_title = meta.get("title", title)
@@ -678,6 +692,7 @@ def _query_core(
     *,
     max_pages: int = MAX_PAGES,
     graph_expand: bool = False,
+    visible: Callable[[str], bool] | None = None,
 ) -> _QueryCoreResult:
     index_content = _load_index(config)
     if not index_content:
@@ -756,7 +771,7 @@ def _query_core(
                 selected_keys.add(neighbor_key)
 
     pages = [*selection.pages, *extras]
-    context = _load_pages(config, pages, db=db, max_pages=max_pages + len(extras))
+    context = _load_pages(config, pages, db=db, max_pages=max_pages + len(extras), visible=visible)
     if not context:
         context = "(No matching wiki pages found.)"
     answer_prompt = (
