@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- **PDF import no longer mistakes a cited year for the paper's own publication year (#70).**
+  `extract_bibliographic_metadata` picked the first `19xx`/`20xx` match on the first page,
+  which is often a reference to earlier work (a citation, a prior report) rather than the
+  paper's own year, and only fell back to the PDF's `creationDate` when the page had no year
+  at all. It now prefers `creationDate` and falls back to the first-page match only when the
+  PDF carries no creation date.
+
 - **Anthropic-compatible providers no longer fail on reasoning models.** Kimi's
   `kimi-coding` endpoint returns a `thinking` block ahead of the answer, and the client
   read `content[0]["text"]` unconditionally, so every call died with
